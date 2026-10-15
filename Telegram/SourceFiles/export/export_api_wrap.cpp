@@ -407,7 +407,58 @@ void VisitRichMessage(
 		photoCallback,
 		documentCallback);
 }
+bool ShouldSkipMessageCustom(
+		const Data::Message &message,
+		const Settings &settings) {
+	if (!settings.filterUserIds.isEmpty()) {
+		const auto ids = settings.filterUserIds.split(',', Qt::SkipEmptyParts);
+		auto userMatched = false;
+		const auto senderBareId = QString::number(
+			message.fromId.value & PeerId::kChatTypeMask);
+		const auto senderFullId = QString::number(message.fromId.value);
+		for (const auto &idStr : ids) {
+			const auto clean = idStr.trimmed();
+			if (clean == senderBareId || clean == senderFullId) {
+				userMatched = true;
+				break;
+			}
+		}
+		if (!userMatched) {
+			return true;
+		}
+	}
 
+	QByteArray fullTextUtf8;
+	for (const auto &part : message.text) {
+		fullTextUtf8 += part.text;
+	}
+	const auto fullText = QString::fromUtf8(fullTextUtf8);
+	const auto textLen = int(fullText.size());
+
+	if (settings.minMessageLength > 0 && textLen < settings.minMessageLength) {
+		return true;
+	}
+	if (settings.maxMessageLength > 0 && textLen > settings.maxMessageLength) {
+		return true;
+	}
+
+	if (!settings.filterKeywords.isEmpty()) {
+		const auto keywords = settings.filterKeywords.split(',', Qt::SkipEmptyParts);
+		auto keywordMatched = false;
+		for (const auto &kw : keywords) {
+			const auto cleanKw = kw.trimmed();
+			if (!cleanKw.isEmpty() && fullText.contains(cleanKw, Qt::CaseInsensitive)) {
+				keywordMatched = true;
+				break;
+			}
+		}
+		if (!keywordMatched) {
+			return true;
+		}
+	}
+
+	return false;
+}
 } // namespace
 
 class ApiWrap::LoadedFileCache {
@@ -2315,6 +2366,15 @@ void ApiWrap::requestChatMessages(
 void ApiWrap::startMessagesSlice(Data::MessagesSlice &&slice) {
 	Expects(bool(_chatProcess) != bool(_topicProcess));
 
+	if (_settings) {
+		slice.list.erase(
+			ranges::remove_if(slice.list, [&](const Data::Message &message) {
+				return Data::SkipMessageByDate(message, *_settings)
+					|| ShouldSkipMessageCustom(message, *_settings);
+			}),
+			slice.list.end());
+	}
+
 	const auto process = _topicProcess
 		? static_cast<AbstractMessagesProcess*>(_topicProcess.get())
 		: static_cast<AbstractMessagesProcess*>(_chatProcess.get());
@@ -2329,7 +2389,6 @@ void ApiWrap::startMessagesSlice(Data::MessagesSlice &&slice) {
 	process->messageFileWork.clear();
 	process->messageFileWorkIndex = 0;
 	process->messageFileWorkMessageIndex = -1;
-
 	resumeMessagesSlice();
 }
 

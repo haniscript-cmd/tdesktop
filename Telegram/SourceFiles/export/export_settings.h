@@ -39,7 +39,6 @@ struct MediaSettings {
 	static inline Types DefaultTypes() {
 		return Type::Photo;
 	}
-
 };
 
 struct Settings {
@@ -79,7 +78,6 @@ struct Settings {
 	QString path;
 	bool forceSubPath = false;
 	Output::Format format = Output::Format();
-
 	Types types = DefaultTypes();
 	Types fullChats = DefaultFullChats();
 	MediaSettings media;
@@ -87,17 +85,22 @@ struct Settings {
 	MTPInputPeer singlePeer = MTP_inputPeerEmpty();
 	TimeId singlePeerFrom = 0;
 	TimeId singlePeerTill = 0;
-
 	int32 singleTopicRootId = 0;
 	uint64 singleTopicPeerId = 0;
 	QString singleTopicTitle;
+
+	// --- Advanced Custom Filters ---
+	QString filterKeywords;
+	QString filterUserIds;
+	int minMessageLength = 0;
+	int maxMessageLength = 0;
+	// -------------------------------
 
 	TimeId availableAt = 0;
 
 	bool onlySinglePeer() const {
 		return singlePeer.type() != mtpc_inputPeerEmpty;
 	}
-
 	bool onlySingleTopic() const {
 		return onlySinglePeer() && singleTopicRootId != 0;
 	}
@@ -111,12 +114,9 @@ struct Settings {
 			| Type::PersonalChats
 			| Type::PrivateGroups;
 	}
-
 	static inline Types DefaultFullChats() {
-		return Type::PersonalChats
-			| Type::BotChats;
+		return Type::PersonalChats | Type::BotChats;
 	}
-
 };
 
 struct Environment {
