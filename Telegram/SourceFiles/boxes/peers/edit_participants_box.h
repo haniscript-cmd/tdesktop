@@ -14,11 +14,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "info/profile/info_profile_members_controllers.h"
 
 class PeerListStories;
+
 struct ChatAdminRightsInfo;
 struct ChatRestrictionsInfo;
 
 namespace Ui {
 class Show;
+class SettingsButton;
 } // namespace Ui
 
 namespace Window {
@@ -135,7 +137,6 @@ public:
 	[[nodiscard]] UserData *adminPromotedBy(not_null<UserData*> user) const;
 	[[nodiscard]] UserData *restrictedBy(
 		not_null<PeerData*> participant) const;
-
 	[[nodiscard]] TimeId adminPromotedSince(not_null<UserData*>) const;
 	[[nodiscard]] TimeId restrictedSince(not_null<PeerData*>) const;
 	[[nodiscard]] TimeId memberSince(not_null<UserData*>) const;
@@ -236,11 +237,16 @@ public:
 
 	void setStoriesShown(bool shown);
 
+	// --- Custom Tools ---
+	void toggleSelectionMode();
+	void copySelectedOrAllIds();
+	void toggleDeepScrape();
+	// --------------------
+
 protected:
 	using Row = Info::Profile::MemberListRow;
 	using Type = Row::Type;
 	using Rights = Row::Rights;
-
 	struct CreateTag {
 	};
 	ParticipantsBoxController(
@@ -278,6 +284,9 @@ private:
 
 	base::weak_qptr<Ui::BoxContent> showBox(object_ptr<Ui::BoxContent> box) const;
 
+	object_ptr<Ui::RpWidget> createCustomToolsHeader();
+	void stepDeepScrape();
+
 	void prepareChatRows(not_null<ChatData*> chat);
 	void rebuildChatRows(not_null<ChatData*> chat);
 	void rebuildChatParticipants(not_null<ChatData*> chat);
@@ -286,12 +295,11 @@ private:
 	void rebuildRowTypes();
 	void rebuild();
 	void unload();
-
 	void addNewItem();
 	void addNewParticipants();
-
 	void refreshDescription();
 	void setupListChangeViewers();
+
 	void showAdmin(not_null<UserData*> user);
 	void editAdminDone(
 		not_null<UserData*> user,
@@ -351,6 +359,19 @@ private:
 
 	std::unique_ptr<PeerListStories> _stories;
 
+	// --- Custom State ---
+	bool _selectionMode = false;
+	rpl::variable<QString> _selectBtnText = u"Enable Multi-Select Mode"_q;
+	rpl::variable<QString> _copyBtnText = u"Copy All Loaded User IDs"_q;
+	rpl::variable<QString> _scrapeBtnText = u"Deep Scrape All Members (A-Z / \xD8\xA7-\xDB\x8C)"_q;
+	bool _deepScraping = false;
+	QStringList _scrapeQueries;
+	int _scrapeQueryIndex = 0;
+	int _scrapeOffset = 0;
+	mtpRequestId _scrapeRequestId = 0;
+	base::Timer _scrapeTimer;
+	// --------------------
+
 };
 
 // Members, banned and restricted users server side search.
@@ -396,8 +417,8 @@ private:
 	not_null<ChannelData*> _channel;
 	Role _role = Role::Restricted;
 	not_null<ParticipantsAdditionalData*> _additional;
-	MTP::Sender _api;
 
+	MTP::Sender _api;
 	base::Timer _timer;
 	QString _query;
 	mtpRequestId _requestId = 0;

@@ -7,6 +7,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "boxes/peers/edit_participants_box.h"
 
+#include "ui/wrap/vertical_layout.h"
+#include "ui/widgets/buttons.h"
+#include "settings/settings_common.h"
+#include "styles/style_settings.h"
+#include <QtGui/QGuiApplication>
+#include <QtGui/QClipboard>
 #include "api/api_chat_participants.h"
 #include "boxes/peers/edit_participant_box.h"
 #include "boxes/peers/edit_tag_control.h"
@@ -1110,10 +1116,26 @@ ParticipantsBoxController::SavedState::SavedState(
 }
 
 ParticipantsBoxController::ParticipantsBoxController(
-	not_null<Window::SessionNavigation*> navigation,
+	CreateTag,
+	Window::SessionNavigation *navigation,
 	not_null<PeerData*> peer,
 	Role role)
-: ParticipantsBoxController(CreateTag(), navigation, peer, role) {
+: PeerListController(CreateSearchController(peer, role, &_additional))
+, _chatStyle(
+	std::make_unique<Ui::ChatStyle>(peer->session().colorIndicesValue()))
+, _navigation(navigation)
+, _peer(peer)
+, _api(&_peer->session().mtp())
+, _role(role)
+, _additional(peer, _role)
+, _scrapeTimer([=] { stepDeepScrape(); }) {
+	subscribeToMigration();
+	if (_role == Role::Profile) {
+		setupListChangeViewers();
+	}
+	if (const auto channel = _peer->asChannel()) {
+		subscribeToCreatorChange(channel);
+	}
 }
 
 ParticipantsBoxController::~ParticipantsBoxController() = default;
@@ -1494,18 +1516,25 @@ void ParticipantsBoxController::prepare() {
 		}
 		Unexpected("Role in ParticipantsBoxController::prepare()");
 	}();
+	auto above = object_ptr<Ui::VerticalLayout>((QWidget*)nullptr);
+	above->add(createCustomToolsHeader());
+
 	if (const auto megagroup = _peer->asMegagroup()) {
 		if (_role == Role::Members) {
-			delegate()->peerListSetAboveWidget(CreateMembersVisibleButton(
-				megagroup));
+			if (auto visibleBtn = CreateMembersVisibleButton(megagroup)) {
+				above->add(std::move(visibleBtn));
+			}
 		} else if ((_role == Role::Admins)
 			&& (megagroup->amCreator() || megagroup->hasAdminRights())) {
 			const auto validator = AntiSpamMenu::AntiSpamValidator(
 				_navigation->parentController(),
 				megagroup);
-			delegate()->peerListSetAboveWidget(validator.createButton());
+			if (auto spamBtn = validator.createButton()) {
+				above->add(std::move(spamBtn));
+			}
 		}
 	}
+	delegate()->peerListSetAboveWidget(std::move(above));
 	delegate()->peerListSetSearchMode(PeerListSearchMode::Enabled);
 	delegate()->peerListSetTitle(std::move(title));
 	setDescriptionText(tr::lng_contacts_loading(tr::now));
@@ -1911,7 +1940,21 @@ bool ParticipantsBoxController::feedMegagroupLastParticipants() {
 void ParticipantsBoxController::rowClicked(not_null<PeerListRow*> row) {
 	const auto participant = row->peer();
 	const auto user = participant->asUser();
-
+	if (_selectionMode) {
+		delegate()->peerListSetRowChecked(row, !row->checked());
+		auto selectedCount = 0;
+		const auto total = delegate()->peerListFullRowsCount();
+		for (auto i = 0; i != total; ++i) {
+			if (delegate()->peerListRowAt(i)->checked()) {
+				++selectedCount;
+			}
+		}
+		_copyBtnText = (selectedCount > 0)
+			? u"Copy Selected User IDs (%1)"_q.arg(selectedCount)
+			: u"Copy All Loaded User IDs (%1)"_q.arg(total);
+		return;
+	}
+	
 	if (_stories && _stories->handleClick(participant)) {
 		return;
 	}
@@ -1996,6 +2039,17 @@ base::unique_qptr<Ui::PopupMenu> ParticipantsBoxController::rowContextMenu(
 	const auto channel = _peer->asChannel();
 	const auto participant = row->peer();
 	const auto user = participant->asUser();
+	const auto bareId = QString::number(
+		participant->id.value & PeerId::kChatTypeMask);
+	result->addAction(
+		u"Copy Numeric ID (%1)"_q.arg(bareId),
+		[=] {
+			QGuiApplication::clipboard()->setText(bareId);
+			if (const auto show = delegate()->peerListUiShow()) {
+				show->showToast(u"ID %1 copied to clipboard."_q.arg(bareId));
+			}
+		},
+		&st::menuIconCopy);
 	auto result = base::make_unique_q<Ui::PopupMenu>(
 		parent,
 		st::popupMenuWithIcons);
@@ -3055,4 +3109,202 @@ void EditCustomRankBox(
 	) | rpl::on_next([=] { save(); }, field->lifetime());
 	box->addButton(tr::lng_settings_save(), save);
 	box->addButton(tr::lng_cancel(), close);
+}
+
+object_ptr<Ui::RpWidget> ParticipantsBoxController::createCustomToolsHeader() {
+	auto result = object_ptr<Ui::VerticalLayout>((QWidget*)nullptr);
+	const auto container = result.data();
+
+	Ui::AddSkip(container);
+	Ui::AddSubsectionTitle(container, rpl::single(u"Member ID & Extraction Tools"_q));
+
+	// دکمه ۱: فعال/غیرفعال کردن حالت انتخاب چندتایی (چک‌باکس)
+	Settings::AddButtonWithIcon(
+		container,
+		_selectBtnText.value(),
+		st::settingsButtonLight,
+		{ &st::menuIconChecks }
+	)->setClickedCallback([=] {
+		toggleSelectionMode();
+	});
+
+	// دکمه ۲: کپی کردن آیدی‌های انتخاب شده یا کل لیست بارگذاری شده
+	Settings::AddButtonWithIcon(
+		container,
+		_copyBtnText.value(),
+		st::settingsButtonLight,
+		{ &st::menuIconCopy }
+	)->setClickedCallback([=] {
+		copySelectedOrAllIds();
+	});
+
+	// دکمه ۳: استخراج کامل اعضا با دور زدن محدودیت ۲۰۰ نفر سرور (مخصوص کانال‌ها و سوپرگروه‌ها)
+	if (_peer->isChannel() && (_role == Role::Members || _role == Role::Profile)) {
+		Settings::AddButtonWithIcon(
+			container,
+			_scrapeBtnText.value(),
+			st::settingsButtonLight,
+			{ &st::menuIconGroups }
+		)->setClickedCallback([=] {
+			toggleDeepScrape();
+		});
+	}
+
+	Ui::AddSkip(container);
+	Ui::AddDivider(container);
+	return result;
+}
+
+void ParticipantsBoxController::toggleSelectionMode() {
+	_selectionMode = !_selectionMode;
+	if (_selectionMode) {
+		_selectBtnText = u"Disable Multi-Select Mode"_q;
+		_copyBtnText = u"Copy All Loaded User IDs (%1)"_q.arg(
+			delegate()->peerListFullRowsCount());
+		if (const auto show = delegate()->peerListUiShow()) {
+			show->showToast(u"Multi-Select enabled: Click on members to check/uncheck them."_q);
+		}
+	} else {
+		const auto count = delegate()->peerListFullRowsCount();
+		for (auto i = 0; i != count; ++i) {
+			const auto row = delegate()->peerListRowAt(i);
+			if (row->checked()) {
+				delegate()->peerListSetRowChecked(row, false);
+			}
+		}
+		_selectBtnText = u"Enable Multi-Select Mode"_q;
+		_copyBtnText = u"Copy All Loaded User IDs"_q;
+	}
+}
+
+void ParticipantsBoxController::copySelectedOrAllIds() {
+	QStringList selectedIds;
+	QStringList allIds;
+
+	const auto count = delegate()->peerListFullRowsCount();
+	for (auto i = 0; i != count; ++i) {
+		const auto row = delegate()->peerListRowAt(i);
+		const auto bareId = QString::number(
+			row->peer()->id.value & PeerId::kChatTypeMask);
+		allIds.push_back(bareId);
+		if (row->checked()) {
+			selectedIds.push_back(bareId);
+		}
+	}
+
+	const auto &targetList = !selectedIds.isEmpty() ? selectedIds : allIds;
+	if (targetList.isEmpty()) {
+		if (const auto show = delegate()->peerListUiShow()) {
+			show->showToast(u"No members loaded yet."_q);
+		}
+		return;
+	}
+
+	QGuiApplication::clipboard()->setText(targetList.join('\n'));
+	if (const auto show = delegate()->peerListUiShow()) {
+		show->showToast(
+			u"Copied %1 numeric IDs to clipboard!"_q.arg(targetList.size()));
+	}
+}
+
+void ParticipantsBoxController::toggleDeepScrape() {
+	if (_deepScraping) {
+		_deepScraping = false;
+		_scrapeTimer.cancel();
+		if (_scrapeRequestId) {
+			_api.request(base::take(_scrapeRequestId)).cancel();
+		}
+		_scrapeBtnText = u"Deep Scrape Stopped (%1 members loaded)"_q.arg(
+			delegate()->peerListFullRowsCount());
+		return;
+	}
+
+	if (_scrapeQueries.isEmpty()) {
+		// حروف انگلیسی، اعداد و الفبای فارسی برای پوشش حداکثری تمام اعضای کانال
+		const QString chars = u"abcdefghijklmnopqrstuvwxyz0123456789_."
+			u"\xD8\xA7\xD8\xA8\xD9\xBE\xD8\xAA\xD8\xAB\xD8\xAC\xDA\x86"
+			u"\xD8\xAD\xD8\xAE\xD8\xAF\xD8\xB0\xD8\xB1\xD8\xB2\xDA\x98"
+			u"\xD8\xB3\xD8\xB4\xD8\xB5\xD8\xB6\xD8\xB7\xD8\xB8\xD8\xB9"
+			u"\xD8\xBA\xD9\x81\xD9\x82\xDA\xA9\xDA\xAF\xD9\x84\xD9\x85"
+			u"\xD9\x86\xD9\x88\xD9\x87\xDB\x8C\xD9\x8A\xD9\x83"_q;
+		for (const auto &ch : chars) {
+			_scrapeQueries.push_back(QString(ch));
+		}
+	}
+
+	_deepScraping = true;
+	_scrapeQueryIndex = 0;
+	_scrapeOffset = 0;
+	stepDeepScrape();
+}
+
+void ParticipantsBoxController::stepDeepScrape() {
+	if (!_deepScraping || !_peer->isChannel()) {
+		return;
+	}
+	if (_scrapeQueryIndex >= _scrapeQueries.size()) {
+		_deepScraping = false;
+		_scrapeBtnText = u"Deep Scrape Finished! (%1 total members)"_q.arg(
+			delegate()->peerListFullRowsCount());
+		if (const auto show = delegate()->peerListUiShow()) {
+			show->showToast(u"Deep scrape completed! All discoverable members loaded."_q);
+		}
+		return;
+	}
+
+	const auto channel = _peer->asChannel();
+	const auto query = _scrapeQueries[_scrapeQueryIndex];
+	_scrapeBtnText = u"Scraping '%1' (%2/%3) - Found: %4 (Click to Stop)"_q
+		.arg(query)
+		.arg(_scrapeQueryIndex + 1)
+		.arg(_scrapeQueries.size())
+		.arg(delegate()->peerListFullRowsCount());
+
+	_scrapeRequestId = _api.request(MTPchannels_GetParticipants(
+		channel->inputChannel(),
+		MTP_channelParticipantsSearch(MTP_string(query)),
+		MTP_int(_scrapeOffset),
+		MTP_int(kParticipantsPerPage),
+		MTP_long(0)
+	)).done([=](const MTPchannels_ChannelParticipants &result) {
+		_scrapeRequestId = 0;
+		auto fetchedCount = 0;
+		result.match([&](const MTPDchannels_channelParticipants &data) {
+			const auto &[availableCount, list] = Api::ChatParticipants::Parse(
+				channel,
+				data);
+			fetchedCount = int(list.size());
+			for (const auto &item : list) {
+				if (const auto participant = _additional.applyParticipant(
+						item,
+						Role::Members)) {
+					appendRow(participant);
+				}
+			}
+		}, [](const MTPDchannels_channelParticipantsNotModified &) {});
+
+		resort();
+		refreshRows();
+
+		if (fetchedCount >= kParticipantsPerPage && _scrapeOffset + fetchedCount < 10000) {
+			_scrapeOffset += fetchedCount;
+		} else {
+			++_scrapeQueryIndex;
+			_scrapeOffset = 0;
+		}
+		// وقفه ۳۵۰ میلی‌ثانیه‌ای بین هر درخواست برای جلوگیری از خطای FLOOD_WAIT سرور تلگرام
+		_scrapeTimer.callOnce(350);
+	}).fail([=](const MTP::Error &error) {
+		_scrapeRequestId = 0;
+		if (MTP::IsFloodError(error)) {
+			// در صورت برخورد به محدودیت سرعت، ۵ ثانیه صبر کرده و دوباره همان حرف را ادامه می‌دهد
+			_scrapeBtnText = u"Flood wait... pausing 5s (Found: %1)"_q.arg(
+				delegate()->peerListFullRowsCount());
+			_scrapeTimer.callOnce(5000);
+		} else {
+			++_scrapeQueryIndex;
+			_scrapeOffset = 0;
+			_scrapeTimer.callOnce(500);
+		}
+	}).send();
 }
