@@ -61,6 +61,7 @@ private:
 	void setupFullExportOptions(not_null<Ui::VerticalLayout*> container);
 	void setupMediaOptions(not_null<Ui::VerticalLayout*> container);
 	void setupOtherOptions(not_null<Ui::VerticalLayout*> container);
+	void setupCustomFilters(not_null<Ui::VerticalLayout*> container);
 	void setupPathAndFormat(not_null<Ui::VerticalLayout*> container);
 	void addHeader(
 		not_null<Ui::VerticalLayout*> container,
@@ -97,7 +98,6 @@ private:
 	void refreshButtons(
 		not_null<Ui::RpWidget*> container,
 		bool canStart);
-
 	void editDateLimit(
 		TimeId current,
 		TimeId min,
@@ -119,8 +119,7 @@ private:
 	int _sizeLimitExtraHeight = 0;
 
 	struct Wrap {
-		Wrap(rpl::producer<> value = nullptr)
-		: value(std::move(value)) {
+		Wrap(rpl::producer<> value = nullptr) : value(std::move(value)) {
 		}
 
 		rpl::producer<> value;

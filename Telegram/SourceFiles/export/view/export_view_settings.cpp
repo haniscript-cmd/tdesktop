@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/labels.h"
 #include "ui/widgets/scroll_area.h"
 #include "ui/widgets/continuous_sliders.h"
+#include "ui/widgets/fields/input_field.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/wrap/padding_wrap.h"
 #include "ui/wrap/slide_wrap.h"
@@ -156,6 +157,7 @@ void SettingsWidget::setupContent() {
 	const auto buttons = setupButtons(scroll, wrap);
 	setupOptions(content);
 	setupPathAndFormat(content);
+	setupCustomFilters(content);
 
 	sizeValue(
 	) | rpl::on_next([=](QSize size) {
@@ -272,6 +274,70 @@ void SettingsWidget::setupOtherOptions(
 		tr::lng_export_option_other_about(tr::now));
 }
 
+void SettingsWidget::setupCustomFilters(
+		not_null<Ui::VerticalLayout*> container) {
+	addHeader(container, u"Advanced Message Filters"_q);
+
+	const auto addTextField = [&](
+			const QString &placeholder,
+			const QString &current,
+			Fn<void(QString)> onChange) {
+		const auto field = container->add(
+			object_ptr<Ui::InputField>(
+				container,
+				st::defaultInputField,
+				rpl::single(placeholder),
+				current),
+			st::exportSettingPadding);
+		field->changes() | rpl::on_next([=] {
+			onChange(field->getLastText().trimmed());
+		}, field->lifetime());
+	};
+
+	addTextField(
+		u"Keywords (comma-separated, e.g. hello, link)"_q,
+		readData().filterKeywords,
+		[=](QString val) {
+			changeData([&](Settings &data) { data.filterKeywords = val; });
+		});
+
+	addTextField(
+		u"User IDs (comma-separated, e.g. 12345678, 87654321)"_q,
+		readData().filterUserIds,
+		[=](QString val) {
+			changeData([&](Settings &data) { data.filterUserIds = val; });
+		});
+
+	addTextField(
+		u"Min Message Length (chars, 0 = no limit)"_q,
+		readData().minMessageLength > 0
+			? QString::number(readData().minMessageLength)
+			: QString(),
+		[=](QString val) {
+			changeData([&](Settings &data) {
+				data.minMessageLength = std::max(0, val.toInt());
+			});
+		});
+
+	addTextField(
+		u"Max Message Length (chars, 0 = no limit)"_q,
+		readData().maxMessageLength > 0
+			? QString::number(readData().maxMessageLength)
+			: QString(),
+		[=](QString val) {
+			changeData([&](Settings &data) {
+				data.maxMessageLength = std::max(0, val.toInt());
+			});
+		});
+
+	container->add(
+		object_ptr<Ui::FlatLabel>(
+			container,
+			u"Leave fields empty to export all messages without filtering."_q,
+			st::exportAboutOptionLabel),
+		st::exportAboutOptionPadding);
+}
+
 void SettingsWidget::setupPathAndFormat(
 		not_null<Ui::VerticalLayout*> container) {
 	if (_singlePeerId != 0) {
@@ -312,8 +378,8 @@ void SettingsWidget::addLocationLabel(
 	) | rpl::map([=](const QString &path) {
 		const auto text = IsDefaultPath(_session, path)
 			? Core::App().canReadDefaultDownloadPath()
-			? u"Downloads/"_q + File::DefaultDownloadPathFolder(_session)
-			: tr::lng_download_path_temp(tr::now)
+				? u"Downloads/"_q + File::DefaultDownloadPathFolder(_session)
+				: tr::lng_download_path_temp(tr::now)
 			: path;
 		return tr::link(
 			QDir::toNativeSeparators(text),
@@ -361,8 +427,8 @@ void SettingsWidget::addFormatAndLocationLabel(
 	) | rpl::map([=](const QString &path) {
 		const auto text = IsDefaultPath(_session, path)
 			? Core::App().canReadDefaultDownloadPath()
-			? u"Downloads/"_q + File::DefaultDownloadPathFolder(_session)
-			: tr::lng_download_path_temp(tr::now)
+				? u"Downloads/"_q + File::DefaultDownloadPathFolder(_session)
+				: tr::lng_download_path_temp(tr::now)
 			: path;
 		return tr::link(
 			QDir::toNativeSeparators(text),
@@ -488,7 +554,6 @@ void SettingsWidget::addLimitsLabel(
 				base::unixtime::parse(dateTime).date(),
 				QTime()));
 	};
-
 	const auto editTimeLimit = [=](Fn<TimeId()> now, Fn<void(TimeId)> done) {
 		_showBoxCallback(Box([=](not_null<Ui::GenericBox*> box) {
 			auto result = Ui::ChooseTimeWidget(
@@ -546,7 +611,7 @@ void SettingsWidget::addLimitsLabel(
 					const auto result = time
 						+ removeTime(settings.singlePeerFrom);
 					if (result >= settings.singlePeerTill
-							&& settings.singlePeerTill) {
+						&& settings.singlePeerTill) {
 						settings.singlePeerFrom = settings.singlePeerTill
 							- kOffset;
 					} else {
@@ -559,7 +624,7 @@ void SettingsWidget::addLimitsLabel(
 			const auto done = [=](TimeId limit) {
 				changeData([&](Settings &settings) {
 					if (limit <= settings.singlePeerFrom
-							&& settings.singlePeerFrom) {
+						&& settings.singlePeerFrom) {
 						settings.singlePeerTill = settings.singlePeerFrom
 							+ kOffset;
 					} else {
@@ -586,7 +651,7 @@ void SettingsWidget::addLimitsLabel(
 					const auto result = time
 						+ removeTime(settings.singlePeerTill);
 					if (result <= settings.singlePeerFrom
-							&& settings.singlePeerFrom) {
+						&& settings.singlePeerFrom) {
 						settings.singlePeerTill = settings.singlePeerFrom
 							+ kOffset;
 					} else {
@@ -918,7 +983,6 @@ void SettingsWidget::refreshButtons(
 	if (start) {
 		start->show();
 		_startClicks = start->clicks() | rpl::to_empty;
-
 		container->sizeValue(
 		) | rpl::on_next([=](QSize size) {
 			const auto right = st::defaultBox.buttonPadding.right();
@@ -933,7 +997,6 @@ void SettingsWidget::refreshButtons(
 		st::defaultBoxButton);
 	cancel->show();
 	_cancelClicks = cancel->clicks() | rpl::to_empty;
-
 	rpl::combine(
 		container->sizeValue(),
 		start ? start->widthValue() : rpl::single(0)
